@@ -1,0 +1,203 @@
+#!/usr/bin/python
+from Adafruit_MotorHAT import Adafruit_MotorHAT, Adafruit_StepperMotor
+from math import sqrt, trunc
+import atexit
+import sys
+import os
+
+# verbosity 0=off, 1=some, 2=more
+verbose = 0
+
+# Motors on (1) or off (0)
+motorsgo = 1
+
+# Length between motors
+baseLength=852
+
+# How fast we want our steppers to move
+# MCM says they ran the motors at 250 RPM http://www.mcmelectronics.com/product/28-17453
+motorRPM = 180
+#motorRPM = 30
+
+# Steps per millimeter; 2000 steps divided by how far belt moved
+stepsMM = 2000.0 / 405.0
+
+# Starting at approximate center of page for simplicity
+X = X0 = (baseLength/2)
+Y = Y0 = -(baseLength/2)
+beltLeft = beltRight = sqrt((X0**2)+(Y0**2))
+
+# Make simple names
+FORWARD = Adafruit_MotorHAT.FORWARD
+BACKWARD = Adafruit_MotorHAT.BACKWARD
+SINGLE = Adafruit_MotorHAT.SINGLE
+DOUBLE = Adafruit_MotorHAT.DOUBLE
+INTERLEAVE = Adafruit_MotorHAT.INTERLEAVE
+MICROSTEP = Adafruit_MotorHAT.MICROSTEP
+RIGHT = "RIGHT"
+LEFT = "LEFT"
+UP = "UP"
+DOWN = "DOWN"
+
+# Create a default object for the motor hat board
+mh = Adafruit_MotorHAT()
+
+# Auto-disable motors on shutdown
+def turnOffMotors():
+    mh.getMotor(1).run(Adafruit_MotorHAT.RELEASE)
+    mh.getMotor(2).run(Adafruit_MotorHAT.RELEASE)
+    mh.getMotor(3).run(Adafruit_MotorHAT.RELEASE)
+    mh.getMotor(4).run(Adafruit_MotorHAT.RELEASE)
+
+atexit.register(turnOffMotors)
+
+# Our NEMA-17 motors = 200 steps/rev. Left s on port 2, right port 1
+rightStepper = mh.getStepper(200, 1)
+rightStepper.setSpeed(motorRPM)
+leftStepper = mh.getStepper(200, 2)
+leftStepper.setSpeed(motorRPM)
+
+# Move motors to new targets
+def moveBelts(newBeltLeft, newBeltRight):
+    global beltLeft, beltRight
+    def stepSize_check(newLength, curLength):
+        distance = abs(newLength - curLength)
+        return(distance)
+
+    while(newBeltLeft > beltLeft):
+        stepSize = stepSize_check(newBeltLeft, beltLeft)
+        if(verbose > 2): print('Left motor clockwise.           Belt length: {:7} Target: {}').format(trunc(beltLeft) + stepSize, trunc(newBeltLeft))
+        if(motorsgo == 1): leftStepper.step(int(stepSize*stepsMM), BACKWARD, DOUBLE)
+        beltLeft += stepSize
+    while(newBeltLeft < beltLeft):
+        stepSize = stepSize_check(newBeltLeft, beltLeft)
+        if(verbose > 2): print('Left motor counter-clockwise.   Belt length: {:7} Target: {}').format(trunc(beltLeft) - stepSize, trunc(newBeltLeft))
+        if(motorsgo == 1): leftStepper.step(int(stepSize*stepsMM), FORWARD, DOUBLE)
+        beltLeft -= stepSize
+    while(newBeltRight > beltRight):
+        stepSize = stepSize_check(newBeltRight, beltRight)
+        if(verbose > 2): print('Right motor counter-clockwise.  Belt length: {:7} Target: {}').format(trunc(beltRight) + stepSize, trunc(newBeltRight))
+        if(motorsgo == 1): rightStepper.step(int(stepSize*stepsMM), FORWARD, DOUBLE)
+        beltRight += stepSize 
+    while(newBeltRight < beltRight):
+        stepSize = stepSize_check(newBeltRight, beltRight)
+        if(verbose > 2): print('Right motor clockwise.          Belt length: {:7} Target: {}').format(trunc(beltRight) - stepSize, trunc(newBeltRight))
+        if(motorsgo == 1): rightStepper.step(int(stepSize*stepsMM), BACKWARD, DOUBLE)
+        beltRight -= stepSize
+
+# Move the head X,Y millimeters
+def moveXY(distX,distY):
+    global X, Y
+    X += distX
+    Y += distY
+    # Here we use Pythagoras's theorem to calculate how long the belt (hypotenuse) for each side needs to be
+    newBeltLeft = sqrt((X**2)+(Y**2))
+    newBeltRight = sqrt(((baseLength-X)**2)+(Y**2))
+    if(verbose > 1): print('X={}, Y={}, CL={}, CR={}').format(X, Y, trunc(newBeltLeft), trunc(newBeltRight))
+    moveBelts(newBeltLeft, newBeltRight)
+
+# Move head in simple directions
+def move(dir,mm):
+    if(mm<0):
+        print " Distance must be positive integer"
+        exit(1)
+    global X, Y
+    counter = 0
+    #print "verbose = " + str(verbose)
+    while(counter<mm):
+        if(dir == "RIGHT"):
+            if(verbose > 0): print "Moving RIGHT"
+            moveXY(1,0)
+        elif(dir == "LEFT"):
+            if(verbose > 0): print "Moving LEFT"
+            moveXY(-1,0)
+        elif(dir == "UP"):
+            if(verbose > 0): print "Moving UP"
+            moveXY(0,1)
+        elif(dir == "DOWN"):
+            if(verbose > 0): print "Moving DOWN"
+            moveXY(0,-1)
+        else:
+            print " Parameter \"" + dir + "\" is not a valid direction"
+            exit(1)
+        counter += 1
+
+def check_int(s):
+    if s[0] in ('-', '+'):
+        return s[1:].isdigit()
+    return s.isdigit()
+
+# Plot a vector between two relative grid positions and move along it in a straight line
+def PlotPath(distX,distY):
+    def _moveXY(dX, dY):
+        r = 0
+        if(dX<0):
+            move(LEFT,abs(dX))
+            if(X<=targetX): r = 1
+        elif(dX>0):
+            move(RIGHT,dX)
+            if(X>=targetX): r = 1
+        if(dY<0):
+            move(DOWN,abs(dY))
+            if(Y<=targetY): r = 1
+        elif(dY>0):
+            move(UP,dY)
+            if(Y>=targetY): r = 1
+        if(verbose > 2): print dX,dY, targetX, targetY
+        return r
+    sign = lambda a: (a>0) - (a<0)
+    targetX, targetY, r = (X+distX), (Y+distY), 0
+    if((distX==0) or (distY==0)):
+        _moveXY(distX,distY)
+    elif(abs(distX)>=abs(distY)):
+        step = abs(distX/distY)
+        while(r == 0):
+            r = _moveXY((step*sign(distX)),sign(distY))
+    elif(abs(distX)<abs(distY)):
+        step = abs(distY/distX)
+        while(r == 0):
+            r = _moveXY(sign(distX),(step*sign(distY)))
+
+# Our main loop will parse command line options and execute accordingly
+def main():
+    if(len(sys.argv) == 2):
+        filename = sys.argv[1]
+        if(os.path.exists(filename)):
+            instructions = [line.rstrip('\n') for line in open(filename)]
+            for instruction in instructions:
+                if((len(instruction.split()) >= 1) and (instruction.split()[0][0] == "#")):
+                    print instruction
+                elif(len(instruction.split()) == 2):
+                    if((not check_int(instruction.split()[0])) and (check_int(instruction.split()[1]))):
+                        if(verbose>0): print "move("+instruction.split()[0].upper()+", "+instruction.split()[1]+")"
+                        move(instruction.split()[0].upper(), int(instruction.split()[1]))
+                    elif((check_int(instruction.split()[0])) and (check_int(instruction.split()[1]))):
+                        if(verbose>0): print "PlotPath("+instruction.split()[0]+", "+instruction.split()[1]+")"
+                        PlotPath(int(instruction.split()[0]), int(instruction.split()[1]))
+                    else:
+                        print " Field \"" + sys.argv[2] + "\" is not an integer"
+                        exit(1)
+                else:
+                    print " Skipping unknown \"" + instruction + "\""
+        else:
+            print " File \"" + filename + "\" does not exist"
+            exit(1)
+    elif(len(sys.argv) == 3):
+        if((check_int(sys.argv[1])) and (check_int(sys.argv[2]))):
+            print "PlotPath("+sys.argv[1]+", "+sys.argv[2]+")"
+            PlotPath(int(sys.argv[1]), int(sys.argv[2]))
+        elif((not check_int(sys.argv[1])) and (check_int(sys.argv[2]))):
+            print "move("+sys.argv[1].upper()+", "+sys.argv[2]+")"
+            move(sys.argv[1].upper(), int(sys.argv[2]))
+        else:
+            print " Parameter \"" + sys.argv[2] + "\" is not an integer"
+            exit(1)
+    else:
+        print " Needs one of the following:"
+        print "   - Direction (up,down,left,right) and distance"
+        print "   - Relative grid vectors"
+        print "   - File containing directions or vectors"
+        exit(1)
+
+main()
+#PlotPath(10,-10)
